@@ -4,6 +4,7 @@
 ## Overview
 
 The proposed solution aims to automate the indexing and processing of manually scanned bills and documents received via hardcopy, transitioning from a traditional manual process to a streamlined, efficient workflow. The key components of the solution include identifying file types in the staging area, routing files based on the document type to their respective bucket initiating a downstream process. This automated approach enhances document handling, reduces manual intervention, ensures accurate document identification and processing, and ultimately boosts operational efficiency, improves customer satisfaction, and lowers costs, creating a faster and more reliable document processing system.
+  > **Note:** This solution can be used to classify any specific type of insurance (life, auto, etc.). However, in this example we configured the workflow to process **`Auto Insurance Claim Documents`**. This can be modified by changing the system prompt in the `Bedrock Classification Lambda Function`.
 
 ## Core Features
 
