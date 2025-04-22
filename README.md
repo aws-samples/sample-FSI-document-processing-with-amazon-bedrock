@@ -28,28 +28,44 @@ The key value proposition for the target market is the ability to transform manu
 
 The application is 4 major components:
 
-1. Document Hardcopy to Soft copy storage  
-    a. Hardcopy documents are scanned and securely uploaded to an S3 bucket using AWS DataSync over an encrypted TLS channel.  
+### 1. Hardcopy to Softcopy Storage
+a. Physical (hardcopy) documents are scanned and securely uploaded to the `scanning staging` S3 bucket using **AWS DataSync** over an encrypted TLS connection.  
 
-    b. When a document is uploaded, an Amazon EventBridge event triggers the next component, which is orchestrated by AWS Step Functions.
+b. Upon upload, an **Amazon EventBridge** event is emitted, triggering an automated workflow orchestrated by **AWS Step Functions**.  
+  > **Note:** This automation must be enabled using an **EventBridge Scheduler**.
+  
+### 2. Document Analysis
+a. The uploaded documents are analyzed using **Amazon Textract**, which extracts textual content and stores it as both `.txt` and `.json` files in the `scanning text` S3 bucket.  
+
+b. The original `.pdf` file is then moved from the `scanning staging` S3 bucket to the `scanning in process` S3 bucket to indicate its progression in the workflow.
+
+  > **Note:** This workflow is designed to process **PDF documents only.** The `Extract Text Lamdba Function` will filter out non-PDF files and move them to a `human review` S3 bucket. However, if no PDF files are present, the State Machine execution will end in a "failed" state.
+
+### 3. Document Classification
+a. The `.txt` version of each document, stored in the `scanning text` S3 bucket, is provided as context input to **Amazon Bedrock**, where **Nova Lite** classifies the content.
+
+b. Based on the classification result, the **AWS Step Functions Choice state** determines the appropriate downstream S3 destination. Different **AWS Lambda functions** are triggered accordingly.
+
+### If the document is classified as a valid auto claim:
+a. User-defined key-value pairs are extracted from the `.json` version of the document (defined in the `Extract Key Values Lambda function`).
+
+b. Extracted data is stored in a dedicated **Amazon DynamoDB** table.
+
+c. The original `.pdf` is archived in a long-term storage S3 bucket.
+
+### If the document is *not* classified as a valid auto claim:
+a. It is moved to a `non insurance documents` S3 bucket for further human review.
+
+b. At the conclusion of the Step Functions workflow, any temporary resources used during processing are **automatically deleted**.
 
 
-2. Document Analysis  
-    a. The document text key words and phrases are extracted by Amazon Textract  
-
-    b. After the extraction is completed the document is moved to the Analyzed Documents S3 bucket
-3. Document Classification  
-    a. The extracted text from the scanned documents is passed as context input to a Bedrock call, where a Amazon Nova Model classifies the document content.
-
-    b. The classification output determines which downstream S3 bucket the document should be moved to. Where a lambda function takes the classification output and moves the documents to the appropriate S3 bucket.
-
-    c. When a document is automatically classified, the key values of the document is stored in a AWS DynamoDB table of records.
-
-    d. If a document cannot be automatically classified, it is sent to a manual classification bucket for further human review.
-4. Downstream applications  
-    a. The automatically classified documents and DynamoDB Table of records can be leveraged in applications such as monitoring applications or dashboards 
-
-    b. The manually classified documents are reviewed by a human and then processed further.
+### 4. Downstream Applications
+a. The classified auto claim documents and their associated **DynamoDB records** can be integrated into downstream systems such as:
+  - **Monitoring dashboards**
+  - **Analytics platforms**
+  - **Automated workflows**
+  
+b. Documents not classified as valid auto claims are **reviewed manually** and processed accordingly.
 
 
 ## Implementation Guide
