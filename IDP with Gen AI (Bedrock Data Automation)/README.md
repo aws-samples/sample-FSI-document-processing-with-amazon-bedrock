@@ -22,7 +22,7 @@ The key value proposition for the target market is the ability to transform manu
 
 
 ## Technical Architecture
-[![Docustream Architecture Diagram](assets/FSI-v6.drawio.png "DocuStream Architecture ")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/FSI-v6.drawio.png)
+[![Docustream Architecture Diagram](assets/BDA.drawio.png "DocuStream Architecture ")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/BDA.drawio.png)
 
 
 
