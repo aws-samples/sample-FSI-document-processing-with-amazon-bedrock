@@ -5,7 +5,11 @@
 
 This Repository is consists of two approaches to automating document classification throughIntelligent Document Processing. These first approach is a traditional Machine Learning (ML) approach paired with generative AI for document classification. The second approach is a end to end pipeline leveraging generative AI. 
 
-Each solution is broken down into CloudFormation templates and artifacts to deploy the respective solution along with the README for guidance
+Each solution is broken down into CloudFormation templates and artifacts to deploy the respective solution along with the README for guidance:
+
+[IDP Solution with Amazon Textract (ML) and Amazon Bedrock (generative AI)](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20ML%20and%20Gen%20AI)
+
+[IDP Solution with Amazon Bedrock Data Automation (generative AI)](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20ML%20and%20Gen%20AI)
 
 ## Core Features 
 
