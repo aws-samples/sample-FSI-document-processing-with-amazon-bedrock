@@ -9,7 +9,7 @@ Each solution is broken down into CloudFormation templates and artifacts to depl
 
 [IDP Solution with Amazon Textract (ML) and Amazon Bedrock (generative AI)](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20ML%20and%20Gen%20AI)
 
-[IDP Solution with Amazon Bedrock Data Automation (generative AI)](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20ML%20and%20Gen%20AI)
+[IDP Solution with Amazon Bedrock Data Automation (generative AI)](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation))
 
 ## Core Features 
 
