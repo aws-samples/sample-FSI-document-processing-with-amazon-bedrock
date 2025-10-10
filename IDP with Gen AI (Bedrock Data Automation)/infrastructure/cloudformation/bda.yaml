@@ -1,0 +1,778 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Step Functions State Machine for Bedrock Data Automation Pipeline'
+
+Parameters:
+  ProjectName:
+    NoEcho: 'true'
+    Type: String
+    Default: 'BDA-AutoInsuranceDocumentExtraction'
+    Description: 'BDA Project Name'
+  
+  BlueprintName:
+    NoEcho: 'true'
+    Type: String
+    Default: 'AutoInsuranceDocumentExtraction'
+    Description: 'BDA Blueprint Name'
+  
+  BDAMainS3BucketName:
+    NoEcho: 'true'
+    Type: String
+    Description: 'S3 bucket for input/output files'
+  
+  BDAHumanReviewS3BucketName:
+    NoEcho: 'true'
+    Type: String
+    Description: 'S3 bucket for files requiring human review'
+  
+  BDAArchiveS3BucketName:
+    NoEcho: 'true'
+    Type: String
+    Description: 'S3 bucket for archiving successfully processed files'
+  
+  DynamoDBTableName:
+    NoEcho: 'true'
+    Type: String
+    Default: 'BDA-ExtractedValuesTable'
+    Description: 'DynamoDB table for storing extracted values'
+
+Resources:
+  # S3 Buckets
+  MainBDAS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BDAMainS3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  BDAHumanReviewBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BDAHumanReviewS3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  BDAArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BDAArchiveS3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # DynamoDB Table
+  BDATable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: claimNumber
+          AttributeType: S
+        - AttributeName: fileName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: claimNumber
+          KeyType: HASH
+        - AttributeName: fileName
+          KeyType: RANGE
+
+  # IAM Role for Step Functions
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+      Policies:
+        - PolicyName: StepFunctionsExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: 
+                  - !GetAtt S3ListFilesFunction.Arn
+                  - !GetAtt BDAInitFunction.Arn
+                  - !GetAtt BDAExecuteFunction.Arn
+                  - !GetAtt BDAStatusCheckFunction.Arn
+                  - !GetAtt BDAExtractValuesFunction.Arn
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListObjectsV2
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${BDAMainS3BucketName}'
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${BDAMainS3BucketName}/*'
+                  - !Sub 'arn:aws:s3:::${BDAHumanReviewS3BucketName}/*'
+                  - !Sub 'arn:aws:s3:::${BDAArchiveS3BucketName}/*'
+
+  # IAM Role for Lambda Functions
+  
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+      Policies:
+        - PolicyName: ExtendedLambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:UpdateSecret
+                  - sts:GetCallerIdentity
+                Resource: '*'
+
+
+  # Lambda Functions
+  BDAInitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bda-init'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          BLUEPRINT_NAME: !Ref BlueprintName
+      Code:
+        ZipFile: |
+          # Paste your bda_init.py code here
+          import json
+          import os
+          import boto3
+          from time import sleep
+          from botocore.exceptions import ClientError
+
+          s3_client = boto3.client('s3', region_name='us-east-1')
+          bda_client = boto3.client('bedrock-data-automation', region_name='us-east-1')
+          bda_runtime_client = boto3.client('bedrock-data-automation-runtime', region_name='us-east-1')
+
+          client = boto3.client('sts')
+          secret_client = boto3.client('secretsmanager', region_name='us-east-1')
+
+          PROJECT_NAME = os.environ.get('PROJECT_NAME', 'AutoInsuranceDocumentClassifier')
+          BLUEPRINT_NAME = os.environ.get('BLUEPRINT_NAME', 'AutoInsuranceDocumentClassifierCustomBlueprintV1')
+          region_name = os.environ['AWS_REGION']
+          account_id = client.get_caller_identity()['Account']
+
+          def get_existing_blueprint_arn(BLUEPRINT_NAME):
+              try:
+                  response = bda_client.list_blueprints()   
+                  for blueprint in response.get('blueprints', []):
+                      if blueprint.get('blueprintName') == BLUEPRINT_NAME:
+                          return blueprint.get('blueprintArn')
+              except Exception as e:
+                  print(f"Error listing blueprints: {e}")
+              return None
+
+          def get_existing_project_arn(project_name):
+              try:
+                  response = bda_client.list_data_automation_projects()        
+                  for project in response.get('projects', []):
+                      if project.get('projectName') == project_name:
+                          return project.get('projectArn')
+              except Exception as e:
+                  print(f"Error listing projects: {e}")
+              return None
+
+          def lambda_handler(event, context):
+              try:
+                  response = bda_client.create_blueprint(
+                      blueprintName=BLUEPRINT_NAME,
+                      type='DOCUMENT',
+                      blueprintStage='LIVE',
+                      schema=json.dumps({
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "description": "Certification of repairs made to an automobile after an accident",
+                      "class": "Certification of Automobile Repair",
+                      "type": "object",
+                      "definitions": {},
+                      "properties": {
+                              "Insured": {
+                                  "type": "string",
+                                  "inferenceType": "explicit",
+                                  "instruction": "Name of the insured person who owns the automobile"
+                              },
+                              "Claim Number": {
+                                  "type": "string",
+                                  "inferenceType": "explicit",
+                                  "instruction": "Unique claim number associated with the accident"
+                              },
+                              "Policy Number": {
+                                  "type": "string",
+                                  "inferenceType": "explicit",
+                                  "instruction": "Insurance policy number of the insured"
+                              },
+                              "Date of Accident": {
+                                  "type": "string",
+                                  "inferenceType": "explicit",
+                                  "instruction": "Date when the accident occurred"
+                              },
+                              "Deductible": {
+                                  "type": "number",
+                                  "inferenceType": "explicit",
+                                  "instruction": "Deductible amount that the insured has to pay for the repairs"
+                              }
+                          }
+                          })
+                          )
+                  blueprint_arn = response['blueprint']['blueprintArn']
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'ConflictException':
+                      blueprint_arn = get_existing_blueprint_arn(BLUEPRINT_NAME)
+                      if not blueprint_arn:
+                          return {'statusCode': 404, 'body': json.dumps("Blueprint ARN could not be found.")}
+
+              try:
+                  response = bda_client.create_data_automation_project(
+                      projectName=PROJECT_NAME,
+                      projectStage='LIVE',
+                      standardOutputConfiguration={
+                          'document': {
+                              'outputFormat': {
+                                  'textFormat': {
+                                      'types': ['PLAIN_TEXT']
+                                  },
+                                  'additionalFileFormat': {
+                                      'state': 'DISABLED',
+                                  }
+                              }
+                          },
+                      },
+                      customOutputConfiguration={
+                          'blueprints': [
+                              {
+                                  'blueprintArn': blueprint_arn,
+                                  'blueprintStage': 'LIVE'
+                              },
+                          ]
+                      }  
+                  )
+                  project_arn = response['projectArn']
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'ConflictException':
+                      project_arn = get_existing_project_arn(PROJECT_NAME)
+                      if not project_arn:
+                          return {'statusCode': 404, 'body': json.dumps(f"Project '{PROJECT_NAME}' exists but ARN could not be found.")}
+
+              secret_payload = json.dumps({
+                  "project_arn": project_arn,
+                  "blueprint_arn": blueprint_arn
+              })
+
+              try:
+                  secret_client.create_secret(
+                      Name='bedrock-data-automation-config',
+                      Description='This is the BDA project_arn',
+                      SecretString=secret_payload
+                  )
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'ResourceExistsException':
+                      secret_client.update_secret(
+                          SecretId='bedrock-data-automation-config',
+                          SecretString=secret_payload
+                      )
+
+              return {
+                  'statusCode': 200,
+                  'project_arn': project_arn,
+                  'blueprint_arn': blueprint_arn
+              }
+
+  BDAExecuteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bda-execute'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref BDAMainS3BucketName
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          bda_runtime_client = boto3.client('bedrock-data-automation-runtime', region_name='us-east-1')
+          secret_client = boto3.client('secretsmanager', region_name='us-east-1')
+          client = boto3.client('sts')
+
+          account_id = client.get_caller_identity()["Account"]
+          region_name = os.environ["AWS_REGION"]
+          bucket_name = os.environ["S3_BUCKET_NAME"]
+
+          def lambda_handler(event, context):
+              file_key = event.get('file_key')
+              file_name = file_key.split('/')[-1] if file_key else 'sample-auto-insurance-claim-doc.pdf'
+              
+              secret_response = secret_client.get_secret_value(
+                  SecretId='bedrock-data-automation-config'
+              )
+              secret = json.loads(secret_response['SecretString'])
+              
+              project_arn = secret['project_arn']
+              blueprint_arn = secret['blueprint_arn']
+              
+              object_name = file_key if file_key else f"data_automation/input/{file_name}"
+              output_name = f"data_automation/output/bda-processed-{file_name}"
+
+              dataresponse = bda_runtime_client.invoke_data_automation_async(
+                  inputConfiguration={'s3Uri': f"s3://{bucket_name}/{object_name}"},
+                  outputConfiguration={'s3Uri': f"s3://{bucket_name}/{output_name}"},
+                  blueprints=[{'blueprintArn': blueprint_arn, 'stage': 'LIVE'}],
+                  notificationConfiguration={
+                  'eventBridgeConfiguration': {
+                      'eventBridgeEnabled': True
+                  }},
+                  dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:{account_id}:data-automation-profile/us.data-automation-v1'
+              )
+
+              return {
+                  'statusCode': 200,
+                  'file_name': file_name,
+                  'invocation_arn': dataresponse['invocationArn'],
+                  'output_s3_location': f"s3://{bucket_name}/{output_name}"
+              }
+
+  S3ListFilesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-s3-list-files'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref BDAMainS3BucketName
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          s3_client = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              bucket_name = os.environ['S3_BUCKET_NAME']
+              prefix = 'data_automation/input/'
+              
+              try:
+                  response = s3_client.list_objects_v2(
+                      Bucket=bucket_name,
+                      Prefix=prefix
+                  )
+                  
+                  contents = response.get('Contents', [])
+                  
+                  # Filter out directory entries and extract only needed fields
+                  files = [{
+                      'Key': obj['Key'],
+                      'Size': obj['Size']
+                  } for obj in contents if obj['Size'] > 0 and obj['Key'] != prefix]
+                  
+                  return {
+                      'statusCode': 200,
+                      'KeyCount': len(files),
+                      'Contents': files
+                  }
+                  
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'error': str(e),
+                      'KeyCount': 0,
+                      'Contents': []
+                  }
+
+  BDAStatusCheckFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bda-status-check'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from botocore.exceptions import ClientError
+
+          bda_runtime_client = boto3.client('bedrock-data-automation-runtime', region_name='us-east-1')
+
+          def lambda_handler(event, context):
+              invocation_arn = event.get('invocation_arn')
+              
+              if not invocation_arn:
+                  return {
+                      'statusCode': 400,
+                      'error': 'Missing invocation_arn'
+                  }
+              
+              try:
+                  response = bda_runtime_client.get_data_automation_status(
+                      invocationArn=invocation_arn
+                  )
+                  
+                  status = response.get('status')
+                  
+                  return {
+                      'statusCode': 200,
+                      'status': status,
+                      'invocation_arn': invocation_arn,
+                      'full_response': response
+                  }
+                  
+              except ClientError as e:
+                  return {
+                      'statusCode': 500,
+                      'error': str(e),
+                      'invocation_arn': invocation_arn
+                  }
+
+  BDAExtractValuesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bda-extract-values'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTableName
+          S3_BUCKET_NAME: !Ref BDAMainS3BucketName
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import botocore.exceptions
+
+          s3 = boto3.client('s3')
+          dynamodb = boto3.resource('dynamodb')
+
+          def lambda_handler(event, context):
+              table_name = os.environ['DYNAMODB_TABLE_NAME']
+              bucket_name = os.environ['S3_BUCKET_NAME']
+              table = dynamodb.Table(table_name)
+              
+              # Get S3 URI from BDA status response
+              output_s3_location = event.get('output_s3_location', '')
+              print(f"DEBUG - Input output_s3_location: {output_s3_location}")
+              
+              # Extract path components
+              full_path = output_s3_location.replace('s3://', '').replace('/job_metadata.json', '')
+              bucket_name = full_path.split('/')[0]
+              incomplete_s3_path_1 = '/'.join(full_path.split('/')[1:])
+              incomplete_s3_path_2 = '/0/custom_output/0/'
+              prefix = f"{incomplete_s3_path_1}{incomplete_s3_path_2}"
+              
+              # Extract file name
+              file_name = incomplete_s3_path_1.split('/')[-2]
+
+              try:
+                  response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+                  contents = response.get('Contents')
+                  
+                  print(f"DEBUG - Contents found: {len(contents) if contents else 0}")
+                  if contents:
+                      for obj in contents:
+                          print(f"DEBUG - Found object: {obj['Key']}")
+                  
+                  if not contents or len(contents) == 0:
+                      raise ValueError("No files found in the S3 response.")
+
+                  obj = contents[0]
+                  key = obj['Key']
+
+                  if not key.endswith('.json'):
+                      raise ValueError(f"Expected a .json file, but got: {key}")
+
+                  file_obj = s3.get_object(Bucket=bucket_name, Key=key)
+                  file_content = json.load(file_obj['Body'])
+
+                  results = file_content.get('inference_result')
+                  if not results:
+                      raise KeyError(f"'inference_result' key not found in file {key}")
+
+                  claim_number = results.get('Claim Number')
+                  if not claim_number:
+                      raise KeyError(f"'Claim Number' key not found in file {key}")
+
+                  dynamodb_item = {
+                      'claimNumber': claim_number,
+                      'fileName': file_name
+                  }
+                  for item_key, item_value in results.items():
+                      dynamodb_item[item_key] = item_value
+
+                  table.put_item(Item=dynamodb_item)
+                  
+                  return {
+                      'statusCode': 200,
+                      'message': 'Successfully stored in DynamoDB',
+                      'claim_number': claim_number,
+                      'file_name': file_name,
+                      'input_file_key': event.get('input_file_key', '')
+                  }
+
+              except Exception as e:
+                  print(f"Error: {e}")
+                  raise Exception(str(e))
+
+  # Step Functions State Machine
+  BDAStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-bda-pipeline'
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Bedrock Data Automation Pipeline with Built-in S3 Check",
+          "StartAt": "Check for data_automation folder",
+          "States": {
+            "Check for data_automation folder": {
+              "Type": "Task",
+              "Next": "Check Folder Key",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${S3ListFilesFunction}",
+                "Payload.$": "$"
+              },
+              "OutputPath": "$.Payload"
+            },
+            "Check Folder Key": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.KeyCount",
+                  "NumericEquals": 0,
+                  "Next": "Success (No items in S3 Bucket)"
+                }
+              ],
+              "Default": "Initialize Bedrock Data Automation Blueprint/Project"
+            },
+            "Success (No items in S3 Bucket)": {
+              "Type": "Succeed"
+            },
+            "Initialize Bedrock Data Automation Blueprint/Project": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "Payload.$": "$",
+                "FunctionName": "${BDAInitFunction}"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Next": "ForEach File in data_automation/input",
+              "ResultPath": null
+            },
+            "ForEach File in data_automation/input": {
+              "Type": "Map",
+              "ItemsPath": "$.Contents",
+              "MaxConcurrency": 5,
+              "Iterator": {
+                "StartAt": "ExecuteBDA",
+                "States": {
+                  "ExecuteBDA": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${BDAExecuteFunction}",
+                      "Payload": {
+                        "file_key.$": "$.Key"
+                      }
+                    },
+                    "ResultPath": "$.execute_result",
+                    "Next": "CheckBDAStatus"
+                  },
+                  "CheckBDAStatus": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${BDAStatusCheckFunction}",
+                      "Payload": {
+                        "invocation_arn.$": "$.execute_result.Payload.invocation_arn"
+                      }
+                    },
+                    "ResultPath": "$.status_result",
+                    "Next": "IsStatusSucceeded"
+                  },
+                  "IsStatusSucceeded": {
+                    "Type": "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.status_result.Payload.status",
+                        "StringEquals": "Success",
+                        "Next": "ExtractValues"
+                      },
+                      {
+                        "Or": [
+                          {
+                            "Variable": "$.status_result.Payload.status",
+                            "StringEquals": "InProgress"
+                          }
+                        ],
+                        "Next": "WaitAndRetry"
+                      }
+                    ],
+                    "Default": "BDAFailed"
+                  },
+                  "WaitAndRetry": {
+                    "Type": "Wait",
+                    "Seconds": 30,
+                    "Next": "CheckBDAStatus"
+                  },
+                  "BDAFailed": {
+                    "Type": "Fail",
+                    "Cause": "BDA processing failed or returned unexpected status"
+                  },
+                  "ExtractValues": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${BDAExtractValuesFunction}",
+                      "Payload": {
+                        "output_s3_location.$": "$.status_result.Payload.full_response.outputConfiguration.s3Uri",
+                        "file_name.$": "$.execute_result.Payload.file_name",
+                        "input_file_key.$": "$.Key"
+                      }
+                    },
+                    "ResultPath": "$.extract_result",
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "Next": "MoveToReviewBucket",
+                        "ResultPath": "$.error"
+                      }
+                    ],
+                    "Next": "ArchiveSuccessfulFile"
+                  },
+                  "ArchiveSuccessfulFile": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+                    "Parameters": {
+                      "Bucket": "${BDAArchiveS3BucketName}",
+                      "Key.$": "$.Key",
+                      "CopySource.$": "States.Format('{}/{}', '${BDAMainS3BucketName}', $.Key)"
+                    },
+                    "ResultPath": "$.copy_result",
+                    "Next": "DeleteInputFile"
+                  },
+                  "MoveToReviewBucket": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+                    "Parameters": {
+                      "Bucket": "${BDAHumanReviewS3BucketName}",
+                      "Key.$": "$.Key",
+                      "CopySource.$": "States.Format('{}/{}', '${BDAMainS3BucketName}', $.Key)"
+                    },
+                    "ResultPath": "$.copy_result",
+                    "Next": "DeleteOriginalFile"
+                  },
+                  "DeleteOriginalFile": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+                    "Parameters": {
+                      "Bucket": "${BDAMainS3BucketName}",
+                      "Key.$": "$.Key"
+                    },
+                    "End": true
+                  },
+                  "DeleteInputFile": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:deleteObject",
+                    "Parameters": {
+                      "Bucket": "${BDAMainS3BucketName}",
+                      "Key.$": "$.Key"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+
+Outputs:
+  StateMachineArn:
+    Description: 'ARN of the Step Functions State Machine'
+    Value: !Ref BDAStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-StateMachineArn'
+  
+  BDAInitFunctionArn:
+    Description: 'ARN of the BDA Init Lambda Function'
+    Value: !GetAtt BDAInitFunction.Arn
+  
+  BDAStatusCheckFunctionArn:
+    Description: 'ARN of the BDA Status Check Lambda Function'
+    Value: !GetAtt BDAStatusCheckFunction.Arn
+  
+  BDAExecuteFunctionArn:
+    Description: 'ARN of the BDA Execute Lambda Function'
+    Value: !GetAtt BDAExecuteFunction.Arn
+  
+  BDAExtractValuesFunctionArn:
+    Description: 'ARN of the BDA Extract Values Lambda Function'
+    Value: !GetAtt BDAExtractValuesFunction.Arn
