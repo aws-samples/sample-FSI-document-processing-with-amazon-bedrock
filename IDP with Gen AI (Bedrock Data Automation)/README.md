@@ -96,19 +96,7 @@ c. At the conclusion of the Step Functions workflow, any temporary resources use
 
 1. Ensure you have downloaded the:
   Cloud Formation Template: [DocuStream.yaml](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/infrastructure/cloudformation/DocuStream.yaml)
-  [Lambda Deployment Packages](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/lambdas) (6 packages in total)
 
-2. Deploying the Lambda Packages
- 2a. Create an Amazon S3 bucket (with a unique name)
- 2b. Upload the 6 .zip files into the S3 Bucket (created in step 2a)
-    should looks something similar to:
-
-    [![Picture of Lambda Bucket](assets/lambda-bucket.png "Lambda Bucket")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/lambda-bucket.png)  
-
-3. Bedrock Model Access
- * **Ensure you have** [access to the Amazon Nova Model on Amazon Bedrock in US-EAST-1](https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html)
- Note: this solution needs the **Amazon Nova Lite Model**, which is available in **US-EAST-1**
-[![Enabling Model Access in Bedrock](assets/bedrock_access.png "Bedrock Model")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/bedrock_access.png)
 
  
  #### Launch the Stack
@@ -119,7 +107,8 @@ c. At the conclusion of the Step Functions workflow, any temporary resources use
 4. Under **Template Source** choose Upload a Template File and choose the [DocuStream.yaml](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/infrastructure/cloudformation/DocuStream.yaml) AWS CloudFormation template from the prerequisites
 5. On the Specify stack details page, assign a name to your solution stack
 6. Under Parameters, review the parameters for this solution template
-[![Parameter Inputs](assets/Parameter_input.png "Parameter Inputs")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/Parameter_input.png)
+[![Parameter Inputs](assets/BDA_Parameter.png "Parameter Inputs ")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/BDA_parameters.png)
+
 
 6a. The CloudFormation template includes the following parameters (many are pre-configured):
 
