@@ -4,13 +4,16 @@
 ## Overview
 
 The proposed solution aims to automate the indexing and processing of manually scanned bills and documents received via hardcopy, transitioning from a traditional manual process to a streamlined, efficient workflow. The key components of the solution include identifying file types in the staging area, routing files based on the document type to their respective bucket initiating a downstream process. This automated approach enhances document handling, reduces manual intervention, ensures accurate document identification and processing, and ultimately boosts operational efficiency, improves customer satisfaction, and lowers costs, creating a faster and more reliable document processing system.
-  > **Note:** This solution can be used to classify multiple types of insurance claim documents (life, auto, etc.). However, in this example we configured the workflow to process **`Auto Insurance Claim Documents`**. Users can customize the insurance type by modifying the system prompt in the [`Bedrock Classification Lambda Function`](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/lambdas/bedrock-classification/src/lambda_function.py)  
+  > **Note:** This solution can be used to classify multiple types of insurance claim documents (life, auto, etc.). However, in this example we configured the workflow to process **`Auto Insurance Claim Documents`** using **Amazon Bedrock Data Automation (BDA)**. Users can customize the document classification by modifying the BDA blueprint configuration in the initialization Lambda function.  
 
-## Core Features 
+## Core Features
 
- * Intelligent Document Processing reducing manual categorization 
+ * Intelligent Document Processing using Amazon Bedrock Data Automation (BDA)
+ * Automated project initialization and credential management via AWS Secrets Manager
+ * Intelligent execution monitoring with prevention of overlapping runs
  * Fully Scalable to meet any customer demand
- * Easy modifiable to change categorization
+ * Easy modifiable to change categorization through BDA blueprint configuration
+ * Comprehensive error handling with automatic routing to review bucket
 
 ## Target Market 
 
@@ -22,42 +25,56 @@ The key value proposition for the target market is the ability to transform manu
 
 
 ## Technical Architecture
-[![Docustream Architecture Diagram](assets/BDA.drawio.png "DocuStream Architecture ")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/BDA.drawio.png)
+[![Docustream Architecture Diagram](assets/BDA.drawio.png "DocuStream Architecture ")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/BDA.drawio.png)
 
+This solution leverages **Amazon Bedrock Data Automation (BDA)** to process and classify insurance documents. The workflow automatically initiates BDA projects, manages credentials via AWS Secrets Manager, and monitors execution status to prevent overlapping runs.
 
+The application consists of 4 major components:
 
+### 1. Document Ingestion & Initialization
+1a. Physical (hardcopy) documents are scanned and securely uploaded to the `input` S3 bucket (under `data_automation/input/` folder structure).
 
-The application is 4 major components:
-
-### 1. Hardcopy to Softcopy Storage  
-1a. Physical (hardcopy) documents are scanned and securely uploaded to the `scanning staging` S3 bucket using **AWS DataSync** over an encrypted TLS connection.  
-
-1b. Upon upload, an **Amazon EventBridge** event is emitted, triggering an automated workflow orchestrated by **AWS Step Functions**.  
+1b. Upon upload, an **Amazon EventBridge** event is emitted, triggering an automated workflow orchestrated by **AWS Step Functions**.
   > **Note:** This automation must be enabled using an **EventBridge Scheduler**.
-  
-### 2. Document Analysis
-2a. The uploaded documents are analyzed using **Amazon Textract**, which extracts textual content and stores it as both `.txt` and `.json` files in the `scanning text` S3 bucket.  
 
-2b. The original `.pdf` file is then moved from the `scanning staging` S3 bucket to the `scanning in process` S3 bucket to indicate its progression in the workflow.
+1c. The Step Functions workflow first checks for existing files in the bucket. If no files are found, the execution completes successfully without further processing.
 
-  > **Note:** This workflow is designed to process **PDF documents only.** The `Extract Text Lamdba Function` will filter out non-PDF files and move them to a `human review` S3 bucket. However, if no PDF files are present, the State Machine execution will end in a "failed" state.
+1d. If files are present, the workflow proceeds to initialize the BDA project:
+   - **BDA Init Lambda** creates or finds an existing BDA blueprint
+   - Creates or finds the project configuration
+   - Stores credentials securely in **AWS Secrets Manager**
 
-### 3. Document Classification  
-3a. The `.txt` version of each document, stored in the `scanning text` S3 bucket, is provided as context input to **Amazon Bedrock**, where **Nova Lite** classifies the content. 
+### 2. Document Processing with Bedrock Data Automation
+2a. The **Execute BDA Lambda** retrieves project information and initiates the Bedrock Data Automation run.
+
+2b. The **Status Check** step monitors the BDA execution:
+   - Verifies if the run completed successfully
+   - If still in progress, the workflow waits to prevent overlapping runs
+   - Handles both `service.error` and `client.error` exceptions
+
+  > **Note:** This workflow is designed to process **PDF documents only.** Non-PDF files will be filtered and moved to a `human review` S3 bucket.
+
+### 3. Data Extraction & Classification
+3a. After successful BDA execution, the **Extract Values Lambda** processes the output:
+   - Retrieves classification results from the BDA output stored in the `data_automation/output/` folder
+   - Extracts key-value pairs from the processed documents
+   - Results are stored as `result.json` in subfolders
 
 3b. Based on the classification result, the **AWS Step Functions Choice state** determines the appropriate downstream S3 destination. Different **AWS Lambda functions** are triggered accordingly.
 
 ### If the document is classified as a valid auto claim:
-a. User-defined key-value pairs are extracted from the `.json` version of the document (defined in the `Extract Key Values Lambda function`).
+a. Key-value pairs are extracted from the BDA output and stored in a dedicated **Amazon DynamoDB** table.
 
-b. Extracted data is stored in a dedicated **Amazon DynamoDB** table.
+b. The original `.pdf` is archived in the **Archive S3 bucket** for long-term storage.
 
-c. The original `.pdf` is archived in a long-term storage S3 bucket.
+c. Extracted data includes all relevant insurance claim information defined in the BDA blueprint.
 
 ### If the document is *not* classified as a valid auto claim:
-a. It is moved to a `non insurance documents` S3 bucket for further human review.
+a. It is moved to the **Review S3 bucket** for further human review.
 
-b. At the conclusion of the Step Functions workflow, any temporary resources used during processing are **automatically deleted**.
+b. If errors occur during extraction (`Extract Values Lambda` failures), documents are also routed to the review bucket.
+
+c. At the conclusion of the Step Functions workflow, any temporary resources used during processing are **automatically cleaned up**.
 
 
 ### 4. Downstream Applications
@@ -76,69 +93,100 @@ b. At the conclusion of the Step Functions workflow, any temporary resources use
 * This solution uses AWS CloudFormation templates and stacks to automate its deployment. The CloudFormation template specifies the AWS resources included in this solution and their properties. The CloudFormation stack provisions the resources that are described in the template.
 
 ### Pre-requisites
- 
-1. Ensure you have downloaded the:  
-  Cloud Formation Template: [DocuStream.yaml](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/infrastructure/cloudformation/DocuStream.yaml)  
-  [Lambda Deployment Packages](https://gitlab.aws.dev/docstream-team-group/DocStream/-/tree/main/lambdas) (5 packages in total)
 
-2. Deploying the Lambda Packages  
- 2a. Create an Amazon S3 bucket (with a unique name)  
+1. Ensure you have downloaded the:
+  Cloud Formation Template: [DocuStream.yaml](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/infrastructure/cloudformation/DocuStream.yaml)
+  [Lambda Deployment Packages](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/tree/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/lambdas) (6 packages in total)
+
+2. Deploying the Lambda Packages
+ 2a. Create an Amazon S3 bucket (with a unique name)
  2b. Upload the 6 .zip files into the S3 Bucket (created in step 2a)
     should looks something similar to:
 
-    [![Picture of Lambda Bucket](assets/lambda-bucket.png "Lambda Bucket")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/lambda-bucket.png)  
+    [![Picture of Lambda Bucket](assets/lambda-bucket.png "Lambda Bucket")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/lambda-bucket.png)  
 
-3. Bedrock Model Access  
- * **Ensure you have** [access to the Amazon Nova Model on Amazon Bedrock in US-EAST-1](https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html)  
- Note: this solution needs the **Amazon Nova Lite Model**, which is availabile in **US-EAST-1**
-[![Enabling Model Access in Bedrock](assets/bedrock_access.png "Bedrock Model")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/bedrock_access.png)
+3. Bedrock Model Access
+ * **Ensure you have** [access to the Amazon Nova Model on Amazon Bedrock in US-EAST-1](https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html)
+ Note: this solution needs the **Amazon Nova Lite Model**, which is available in **US-EAST-1**
+[![Enabling Model Access in Bedrock](assets/bedrock_access.png "Bedrock Model")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/bedrock_access.png)
 
  
  #### Launch the Stack
 
-1. Sign in to the AWS Management Console and search for CloudFormation in the US-East-1 (N.Virginia) Region 
+1. Sign in to the AWS Management Console and search for CloudFormation in the US-East-1 (N.Virginia) Region
 2. Click Create Stack
 3. Choose an existing template
-4. Under **Template Source** choose Upload a Template File and choose the [DocuStream.yaml](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/infrastructure/cloudformation/DocuStream.yaml) AWS CloudFormation template from the prerequisites
+4. Under **Template Source** choose Upload a Template File and choose the [DocuStream.yaml](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/infrastructure/cloudformation/DocuStream.yaml) AWS CloudFormation template from the prerequisites
 5. On the Specify stack details page, assign a name to your solution stack
 6. Under Parameters, review the parameters for this solution template
-[![Parameter Inputs](assets/Parameter_input.png "Parameter Inputs")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/Parameter_input.png)   
-6a. Use the lambda deployment package names (including.zip) from S3 to fill in the Parameters  (note the order of these parameters may not be the same)
+[![Parameter Inputs](assets/Parameter_input.png "Parameter Inputs")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/Parameter_input.png)
 
-    DocuStreamCleanupResourcesS3Key -> **DocuStreamCleanupResourcesLambdaFunction.zip**  
+6a. The CloudFormation template includes the following parameters (many are pre-configured):
 
+    **BlueprintName** -> Pre-set by CloudFormation (default value provided)
 
-    DocuStreamBedrockClassificationS3Key ->  **DocuStreamBedrockClassificationLambdaFunction.zip**
+    **DynamoDBTableName** -> Pre-set by CloudFormation (default value provided)
 
+    **ProjectName** -> Pre-set by CloudFormation (default value provided)
 
-    DocuStreamExtractKeyValuesS3Key -> **DocuStreamExtractKeyValuesLambdaFunction.zip** 
+    **ArchiveS3BucketName** -> Optional: Provide a custom name for the archive S3 bucket
 
+    **InputS3BucketName** -> Optional: Provide a custom name for the input S3 bucket
 
-    DocuStreamLambdaDeploymentS3Bucket ->  **name of your S3 bucket i.e Docu-stream-bucket**
+    **OutputS3BucketName** -> Optional: Provide a custom name for the output S3 bucket
 
-
-    DocuStreamMoveFoldersS3Key -> **DocuStreamMoveFoldersLambdaFunction.zip**
-    
-    DocuStreamMoveNonInsuranceDocumentsS3Key ->
-    **DocuStreamMoveNonInsuranceDocumentsLambdaFunction.zip**  
-
-    DocuStreamExtractTextS3Key -> **DocuStreamExtractTextLambdaFunction.zip**  
-
+    **ReviewS3BucketName** -> Optional: Provide a custom name for the review S3 bucket
 
 7. Select Next.
-8. On the Configure stack options page, select the box acknowledging that the template will create IAM resources. choose Next.
+8. On the Configure stack options page, select the box acknowledging that the template will create IAM resources, then choose Next.
 9. On the Review and create page, review and confirm the settings.
 10. Choose Submit to deploy the stack.
 11. You can view the status of the stack in the AWS CloudFormation console in the Status column. You should receive a CREATE_COMPLETE status in approximately five minutes.
 
+ #### Post-Deployment Configuration
+
+**Important:** After the CloudFormation stack is created, you must create the required folder structure in the input S3 bucket:
+
+1. Navigate to the input S3 bucket created by the CloudFormation stack
+2. Create the following folder structure:
+   ```
+   data_automation/
+   ├── input/
+   └── output/
+   ```
+3. To create these folders:
+   - Create a folder named `data_automation`
+   - Inside `data_automation`, create a folder named `input`
+   - Inside `data_automation`, create a folder named `output`
+
+This folder structure is required for the Bedrock Data Automation (BDA) workflow to function properly.
+
  #### Test the Solution
- 1. In the S3 bucket [stack_name]-scanningstagings3bucket-xxxxxx create a new folder
-[![create test folder](assets/new_folder_in_scanning_staging.png "new folder")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/new_folder_in_scanning_staging.png)
- 2. Upload sample documents for testing in the folder created
- 3. Go to AWS Step Functions and find the Step Function that was created by the CloudFormation template
- 4. Run the Step function
- 5. Check the outputs of the step function  
- 5a. The correctly classifed insurance documents will be in the [stack_name]-archivess3bucket-xxxxxx  
- [![correctly classified](assets/correct_classified.png "correct")](https://gitlab.aws.dev/docstream-team-group/DocStream/-/blob/main/assets/correct_classified.png)
- 5b. the other documents will be in [stack_name]-noninsurancedocumentss3bucket-xxxxxx or [stack_name]-humanreviews3bucket-xxxxxx
+
+1. Navigate to the Input S3 bucket created by CloudFormation
+2. Upload sample PDF documents for testing to the `data_automation/input/` folder
+   - Ensure the documents are valid PDF files
+   - Test with both valid insurance claim documents and non-insurance documents
+
+3. Trigger the Step Functions workflow:
+   - Go to AWS Step Functions in the console
+   - Find the Step Function created by the CloudFormation template
+   - The workflow will automatically process files when triggered by EventBridge, or you can manually execute it
+
+4. Monitor the execution:
+   - Watch the Step Functions execution progress
+   - The workflow includes the following key steps:
+     - File listing and validation
+     - BDA initialization
+     - BDA execution
+     - Status checking (with wait states for in-progress runs)
+     - Value extraction
+     - Document routing
+
+5. Check the outputs:
+   - **Successfully classified insurance documents**: Check the **Archive S3 bucket** for archived PDFs
+   [![correctly classified](assets/correct_classified.png "correct")](https://github.com/aws-samples/sample-FSI-document-processing-with-amazon-bedrock/blob/main/IDP%20with%20Gen%20AI%20(Bedrock%20Data%20Automation)/assets/correct_classified.png)
+   - **Non-insurance or error documents**: Check the **Review S3 bucket** for documents requiring manual review
+   - **Extracted data**: Query the **DynamoDB table** to see the extracted key-value pairs from successfully processed documents
+   - **BDA outputs**: Check the `data_automation/output/` folder for `result.json` files containing detailed processing results
 
